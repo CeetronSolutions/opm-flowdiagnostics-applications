@@ -20,6 +20,7 @@
 #ifndef OPM_ECLGRAPH_HEADER_INCLUDED
 #define OPM_ECLGRAPH_HEADER_INCLUDED
 
+#include <opm/utility/ECLGraphGridSource.hpp>
 #include <opm/utility/ECLPhaseIndex.hpp>
 #include <opm/utility/ECLResultData.hpp>
 #include <opm/utility/ECLUnitHandling.hpp>
@@ -100,6 +101,15 @@ namespace Opm {
         static ECLGraph
         load(const ecl_grid_type*   grid,
              const ECLInitFileData& init);
+
+        /// Named constructor.
+        ///
+        /// \param[in] grid Grid topology, independent of grid reader.
+        ///
+        /// \param[in] init Name of ECL INIT file corresponding to \p grid.
+        static ECLGraph
+        load(const ECLGraphGridSource& grid,
+             const ECLInitFileData&    init);
 
         /// Retrieve number of grids in model.
         ///
@@ -248,12 +258,7 @@ namespace Opm {
                            UnitConvention        unit) const;
 
         /// Raw grid data (geometric grid) for corner-point grids.
-        struct ECLGeometryGrid {
-            std::array<int, 3> size;
-            std::vector<double> zcorn;
-            std::vector<double> coord;
-            std::vector<int> actnum;
-        };
+        using ECLGeometryGrid = ECLGraphGeometry;
 
         /// Retrieve corner-point grid definition,
         /// only for main grid in case of local grid refinement (LGR).

@@ -98,16 +98,24 @@ namespace {
         std::string
         getGridName(const ecl_grid_type* G, const int gridID);
 
-        /// Extract Cartesian dimensions of an ECL grid.
+        /// Extract Cartesian dimensions of a grid.
         ///
-        /// \param[in] G ERT grid instance corresponding to the model's main
-        ///    grid or one of its LGRs.  Typically obtained from function
-        ///    getGrid().
+        /// \param[in] G Grid topology source.
         ///
-        /// \return Cartesian dimensions of \p G.  Corresponds to number of
-        ///    cells in each cardinal direction in 3D depositional space.
+        /// \param[in] gridID Numeric index of requested grid.  Zero for the
+        ///    main grid or positive for one of the LGRs.
+        ///
+        /// \return Cartesian dimensions of grid \p gridID.  Corresponds to
+        ///    number of cells in each cardinal direction in 3D depositional
+        ///    space.
         std::array<std::size_t,3>
-        cartesianDimensions(const ecl_grid_type* G);
+        cartesianDimensions(const ::Opm::ECLGraphGridSource& G,
+                            const int                        gridID);
+
+        /// Retrieve total number of cells in a grid, including inactive.
+        std::size_t
+        numGlobalCells(const ::Opm::ECLGraphGridSource& G,
+                       const int                        gridID);
 
         /// Access unit conventions pertaining to single grid in result set.
         ///
@@ -131,17 +139,17 @@ namespace {
         ///
         /// Specialised tool needed to determine the active cells.
         ///
-        /// \param[in] G ERT Grid representation.
+        /// \param[in] nglob Number of global cells in grid.
         ///
         /// \param[in] init ERT representation of INIT source.
         ///
         /// \param[in] gridID ID (name) of grid.  Empty for the main grid
         ///    and non-empty in the case of an LGR.
         ///
-        /// \return Vector of pore-volumes for all global cells of \p G in
+        /// \return Vector of pore-volumes for all global cells of grid in
         ///    SI unit conventions (rm^3).
         std::vector<double>
-        getPVolVector(const ecl_grid_type*          G,
+        getPVolVector(const std::size_t             nglob,
                       const ::Opm::ECLInitFileData& init,
                       const std::string&            gridID = "");
 
@@ -164,17 +172,16 @@ namespace {
         public:
             /// Constructor.
             ///
-            /// \param[in] G ERT grid structure corresponding either to the
-            ///    model's main grid or, if applicable, one of its LGRs.
+            /// \param[in] G Grid topology source for the model.
             ///
             /// \param[in] init Internalised ERT representation of result
             ///    set's INIT file.
             ///
             /// \param[in] gridID Numeric identifier of this grid.  Zero for
             ///    main grid, positive for LGRs.
-            CartesianGridData(const ecl_grid_type*          G,
-                              const ::Opm::ECLInitFileData& init,
-                              const int                     gridID);
+            CartesianGridData(const ::Opm::ECLGraphGridSource& G,
+                              const ::Opm::ECLInitFileData&    init,
+                              const int                        gridID);
 
             /// Retrieve non-negative numeric ID of grid instance.
             ///
@@ -278,14 +285,17 @@ namespace {
 
                 /// Constructor
                 ///
-                /// \param[in] G ERT Grid representation.
+                /// \param[in] G Grid topology source for the model.
+                ///
+                /// \param[in] gridID Numeric identifier of this grid.
                 ///
                 /// \param[in] pvol Vector of pore-volumes on all global
-                ///    cells of \p G.  Typically obtained through function
+                ///    cells of grid.  Typically obtained through function
                 ///    getPVolVector().  Numerical values assumed to be in
                 ///    SI units (rm^3).
-                CartesianCells(const ecl_grid_type*       G,
-                               const std::vector<double>& pvol);
+                CartesianCells(const ::Opm::ECLGraphGridSource& G,
+                               const int                        gridID,
+                               const std::vector<double>&       pvol);
 
                 /// Retrive global cell indices of all active cells in grid.
                 std::vector<std::size_t> activeGlobal() const;
@@ -580,17 +590,10 @@ ECL::getGridName(const ecl_grid_type* G, const int gridID)
 }
 
 std::vector<double>
-ECL::getPVolVector(const ecl_grid_type*          G,
+ECL::getPVolVector(const std::size_t             nglob,
                    const ::Opm::ECLInitFileData& init,
                    const std::string&            gridID)
 {
-    auto make_szt = [](const int i)
-    {
-        return static_cast<std::vector<double>::size_type>(i);
-    };
-
-    const auto nglob = make_szt(ecl_grid_get_global_size(G));
-
     auto pvol = std::vector<double>(nglob, 1.0);
 
     auto kw = std::string{"PORV"};
@@ -639,16 +642,28 @@ ECL::loadCase(const boost::filesystem::path& grid)
 }
 
 std::array<std::size_t,3>
-ECL::cartesianDimensions(const ecl_grid_type* G)
+ECL::cartesianDimensions(const ::Opm::ECLGraphGridSource& G,
+                         const int                        gridID)
 {
     auto make_szt = [](const int i)
     {
         return static_cast<std::size_t>(i);
     };
 
-    return { { make_szt(ecl_grid_get_nx(G)) ,
-               make_szt(ecl_grid_get_ny(G)) ,
-               make_szt(ecl_grid_get_nz(G)) } };
+    const auto dims = G.dimensions(gridID);
+
+    return { { make_szt(dims[0]) ,
+               make_szt(dims[1]) ,
+               make_szt(dims[2]) } };
+}
+
+std::size_t
+ECL::numGlobalCells(const ::Opm::ECLGraphGridSource& G,
+                    const int                        gridID)
+{
+    const auto dims = cartesianDimensions(G, gridID);
+
+    return dims[0] * dims[1] * dims[2];
 }
 
 template <class ResultSet>
@@ -704,12 +719,137 @@ ECL::loadNNC(const ecl_grid_type* G,
     return nncData;
 }
 
+namespace { namespace ECL {
+
+    /// Grid topology from an ERT grid.
+    class ResdataGridSource : public ::Opm::ECLGraphGridSource
+    {
+    public:
+        ResdataGridSource(const ecl_grid_type* G,
+                          const ecl_file_type* init)
+            : G_   (G)
+            , init_(init)
+        {}
+
+        int numGrids() const override
+        {
+            return ::ECL::numGrids(this->G_);
+        }
+
+        std::string gridName(const int gridID) const override
+        {
+            return getGridName(getGrid(this->G_, gridID), gridID);
+        }
+
+        std::array<int,3> dimensions(const int gridID) const override
+        {
+            const auto* g = getGrid(this->G_, gridID);
+
+            return { { ecl_grid_get_nx(g) ,
+                       ecl_grid_get_ny(g) ,
+                       ecl_grid_get_nz(g) } };
+        }
+
+        std::vector<int> activeToGlobal(const int gridID) const override
+        {
+            const auto* g    = getGrid(this->G_, gridID);
+            const auto  nact = ecl_grid_get_nactive(g);
+
+            auto glob = std::vector<int>(nact);
+            for (auto act = 0*nact; act < nact; ++act) {
+                glob[act] = ecl_grid_get_global_index1A(g, act);
+            }
+
+            return glob;
+        }
+
+        std::vector<bool> activeIsSubdivided(const int gridID) const override
+        {
+            const auto* g    = getGrid(this->G_, gridID);
+            const auto  nact = ecl_grid_get_nactive(g);
+
+            auto divided = std::vector<bool>(nact);
+            for (auto act = 0*nact; act < nact; ++act) {
+                divided[act] = nullptr != ecl_grid_get_cell_lgr1A(g, act);
+            }
+
+            return divided;
+        }
+
+        std::vector<::Opm::ECLGraphNNC> nncs() const override
+        {
+            const auto nncData = loadNNC(this->G_, this->init_);
+
+            auto nncs = std::vector<::Opm::ECLGraphNNC>{};
+            nncs.reserve(nncData.size());
+
+            for (const auto& nnc : nncData) {
+                nncs.push_back({ nnc.grid_nr1, nnc.grid_nr2,
+                                 nnc.global_index1, nnc.global_index2,
+                                 nnc.trans, nnc.input_index });
+            }
+
+            return nncs;
+        }
+
+        bool geometry(::Opm::ECLGraphGeometry& geom) const override
+        {
+            const auto* grid = this->G_;
+
+            // Size
+            {
+                geom.size[0] = ecl_grid_get_nx(grid);
+                geom.size[1] = ecl_grid_get_ny(grid);
+                geom.size[2] = ecl_grid_get_nz(grid);
+            }
+
+            // COORD
+            {
+                const auto ncoord =
+                        static_cast<std::size_t>(ecl_grid_get_coord_size(grid));
+                geom.coord.resize(ncoord, 0.0);
+
+                ecl_grid_init_coord_data_double(grid, geom.coord.data());
+            }
+
+            // ZCORN
+            {
+                const auto nzcorn =
+                        static_cast<std::size_t>(ecl_grid_get_zcorn_size(grid));
+                geom.zcorn.resize(nzcorn, 0.0);
+
+                ecl_grid_init_zcorn_data_double(grid, geom.zcorn.data());
+            }
+
+            // ACTNUM
+            {
+                const auto nglob =
+                        static_cast<std::size_t>(geom.size[0]) *
+                        static_cast<std::size_t>(geom.size[1]) *
+                        static_cast<std::size_t>(geom.size[2]);
+
+                geom.actnum.assign(nglob, 1);
+
+                ecl_grid_init_actnum_data(grid, geom.actnum.data());
+            }
+
+            return true;
+        }
+
+    private:
+        const ecl_grid_type* G_;
+        const ecl_file_type* init_;
+    };
+
+}} // Anonymous::ECL
+
 // ======================================================================
 
 ECL::CartesianGridData::
-CartesianCells::CartesianCells(const ecl_grid_type*       G,
-                               const std::vector<double>& pvol)
-    : cartesianSize_(::ECL::cartesianDimensions(G))
+CartesianCells::CartesianCells(const ::Opm::ECLGraphGridSource& G,
+                               const int                        gridID,
+                               const std::vector<double>&       pvol)
+    : cartesianSize_(::ECL::cartesianDimensions(G, gridID))
 {
     if (pvol.size() != static_cast<decltype(pvol.size())>
         (this->cartesianSize_[0] *
@@ -726,17 +866,17 @@ CartesianCells::CartesianCells(const ecl_grid_type*       G,
 
     using ID = ResultSetMapping::ID;
 
-    this->rsMap_.num_active = make_szt(ecl_grid_get_nactive(G));
+    const auto activeToGlobal     = G.activeToGlobal(gridID);
+    const auto activeIsSubdivided = G.activeIsSubdivided(gridID);
+
+    this->rsMap_.num_active = activeToGlobal.size();
 
     this->rsMap_.subset.clear();
     this->rsMap_.subset.reserve(this->rsMap_.num_active);
 
-    for (decltype(ecl_grid_get_nactive(G))
-             act = 0, nact = ecl_grid_get_nactive(G);
-         act < nact; ++act)
+    for (std::size_t act = 0; act < activeToGlobal.size(); ++act)
     {
-        const auto glob =
-            make_szt(ecl_grid_get_global_index1A(G, act));
+        const auto glob = make_szt(activeToGlobal[act]);
 
         if (pvol[glob] > 0.0) {
             this->rsMap_.subset.push_back(ID{ make_szt(act), glob });
@@ -758,11 +898,7 @@ CartesianCells::CartesianCells(const ecl_grid_type*       G,
             this->active_ID_[cell.glob] = active++;
             this->activePVol_.push_back(pvol[cell.glob]);
 
-            const auto ert_active = static_cast<int>(cell.act);
-            const auto is_divided =
-                nullptr != ecl_grid_get_cell_lgr1A(G, ert_active);
-
-            this->is_divided_.push_back(is_divided);
+            this->is_divided_.push_back(activeIsSubdivided[cell.act]);
         }
     }
 }
@@ -967,12 +1103,14 @@ CartesianCells::ind2sub(const std::size_t globalCell) const
 // ======================================================================
 
 ECL::CartesianGridData::
-CartesianGridData(const ecl_grid_type*          G,
-                  const ::Opm::ECLInitFileData& init,
-                  const int                     gridID)
+CartesianGridData(const ::Opm::ECLGraphGridSource& G,
+                  const ::Opm::ECLInitFileData&    init,
+                  const int                        gridID)
     : gridID_  (gridID)
-    , gridName_(::ECL::getGridName(G, gridID))
-    , cells_   (G, ::ECL::getPVolVector(G, init, gridName_))
+    , gridName_(G.gridName(gridID))
+    , cells_   (G, gridID,
+                ::ECL::getPVolVector(::ECL::numGlobalCells(G, gridID),
+                                     init, gridName_))
 {
     {
         using VT = DirectionSuffix::value_type;
@@ -1269,8 +1407,8 @@ public:
     ///                 If available in the INIT file, the constructor will
     ///                 also leverage the transmissibility data when
     ///                 constructing the active cell neighbourship table.
-    Impl(const ecl_grid_type*   grid,
-         const ECLInitFileData& init);
+    Impl(const ECLGraphGridSource& grid,
+         const ECLInitFileData&    init);
 
     /// Retrieve number of grids.
     ///
@@ -1555,7 +1693,7 @@ private:
         void add(const std::vector<ECL::CartesianGridData>& grids,
                  const std::vector<std::size_t>&            offset,
                  const double                               trans_unit,
-                 const ecl_nnc_type&                        nnc);
+                 const ECLGraphNNC&                         nnc);
 
         std::vector<Category> allCategories() const;
 
@@ -1649,7 +1787,7 @@ private:
         /// \return Whether or not the transmissibility is positive and both
         /// candidate endpoints satisfy the cell viability criterion.
         bool isViable(const std::vector<ECL::CartesianGridData>& grids,
-                      const ecl_nnc_type& nnc) const;
+                      const ECLGraphNNC& nnc) const;
     };
 
     /// Collection of model's non-neighbouring connections--be they within a
@@ -1681,11 +1819,11 @@ private:
     ///
     /// Writes to \c neigh_ and \c nncID_.
     ///
-    /// \param[in] G ERT Grid representation.
+    /// \param[in] G Grid topology source.
     ///
     /// \param[in] init ERT representation of INIT source.
-    void defineNNCs(const ecl_grid_type*   G,
-                    const ECLInitFileData& init);
+    void defineNNCs(const ECLGraphGridSource& G,
+                    const ECLInitFileData&    init);
 
     /// Extract scenario's set of active phases.
     ///
@@ -1788,7 +1926,7 @@ Opm::ECLGraph::Impl::
 NNC::add(const std::vector<ECL::CartesianGridData>& grid,
          const std::vector<std::size_t>&            offset,
          const double                               trans_unit,
-         const ecl_nnc_type&                        nnc)
+         const ECLGraphNNC&                         nnc)
 {
     if (! this->isViable(grid, nnc)) {
         // Zero transmissibility or at least one endpoint unviable.  Don't
@@ -1799,15 +1937,15 @@ NNC::add(const std::vector<ECL::CartesianGridData>& grid,
     const auto neighIdx = this->numConnections();
 
     {
-        const auto c = grid[nnc.grid_nr1].activeCell(nnc.global_index1);
-        const auto o = static_cast<int>(offset[nnc.grid_nr1]);
+        const auto c = grid[nnc.grid1].activeCell(nnc.glob1);
+        const auto o = static_cast<int>(offset[nnc.grid1]);
 
         this->neigh_.push_back(o + c);
     }
 
     {
-        const auto c = grid[nnc.grid_nr2].activeCell(nnc.global_index2);
-        const auto o = static_cast<int>(offset[nnc.grid_nr2]);
+        const auto c = grid[nnc.grid2].activeCell(nnc.glob2);
+        const auto o = static_cast<int>(offset[nnc.grid2]);
 
         this->neigh_.push_back(o + c);
     }
@@ -1816,16 +1954,16 @@ NNC::add(const std::vector<ECL::CartesianGridData>& grid,
     // if flux fields are not output to the on-disk result set.
     this->trans_.push_back(ImportedOpm::unit::convert::from(nnc.trans, trans_unit));
 
-    const auto cat = this->classifyConnection(nnc.grid_nr1, nnc.grid_nr2);
+    const auto cat = this->classifyConnection(nnc.grid1, nnc.grid2);
 
     auto entry = NonNeighKeywordIndexSet::Map {
         neighIdx,
-        static_cast<std::size_t>(nnc.input_index)
+        static_cast<std::size_t>(nnc.inputIndex)
     };
 
     auto rel = this->keywords_.find(cat);
     if (rel != std::end(this->keywords_)) {
-        rel->second.indexSet().add(nnc.grid_nr2, std::move(entry));
+        rel->second.indexSet().add(nnc.grid2, std::move(entry));
     }
 }
 
@@ -1917,26 +2055,26 @@ isViable(const std::vector<ECL::CartesianGridData>& grids,
 bool
 Opm::ECLGraph::Impl::NNC::
 isViable(const std::vector<ECL::CartesianGridData>& grids,
-         const ecl_nnc_type&                        nnc) const
+         const ECLGraphNNC&                         nnc) const
 {
     return (nnc.trans > 0.0)    // Omit zero-trans NNCs
-        && this->isViable(grids, nnc.grid_nr1, nnc.global_index1)
-        && this->isViable(grids, nnc.grid_nr2, nnc.global_index2);
+        && this->isViable(grids, nnc.grid1, nnc.glob1)
+        && this->isViable(grids, nnc.grid2, nnc.glob2);
 }
 
 // ======================================================================
 
-Opm::ECLGraph::Impl::Impl(const ecl_grid_type*   grid,
-                          const ECLInitFileData& init)
+Opm::ECLGraph::Impl::Impl(const ECLGraphGridSource& grid,
+                          const ECLInitFileData&    init)
 {
-    const auto numGrids = ECL::numGrids(grid);
+    const auto numGrids = grid.numGrids();
 
     this->grid_.reserve(numGrids);
     this->activeOffset_.reserve(numGrids + 1);
     this->activeOffset_.push_back(0);
 
     for (auto gridID = 0*numGrids; gridID < numGrids; ++gridID) {
-        this->grid_.emplace_back(ECL::getGrid(grid, gridID), init, gridID);
+        this->grid_.emplace_back(grid, init, gridID);
 
         this->activeOffset_.push_back(this->activeOffset_.back() +
                                       this->grid_.back().numCells());
@@ -1949,45 +2087,8 @@ Opm::ECLGraph::Impl::Impl(const ecl_grid_type*   grid,
     this->defineNNCs(grid, init);
     this->defineActivePhases(init);
 
-    // Extract geometry of main grid.
-    {
-        // Size
-        {
-            this->geomGrid_.size[0] = ecl_grid_get_nx(grid);
-            this->geomGrid_.size[1] = ecl_grid_get_ny(grid);
-            this->geomGrid_.size[2] = ecl_grid_get_nz(grid);
-        }
-
-        // COORD
-        {
-            const auto ncoord =
-                    static_cast<std::size_t>(ecl_grid_get_coord_size(grid));
-            this->geomGrid_.coord.resize(ncoord, 0.0);
-
-            ecl_grid_init_coord_data_double(grid, this->geomGrid_.coord.data());
-        }
-
-        // ZCORN
-        {
-            const auto nzcorn =
-                    static_cast<std::size_t>(ecl_grid_get_zcorn_size(grid));
-            this->geomGrid_.zcorn.resize(nzcorn, 0.0);
-
-            ecl_grid_init_zcorn_data_double(grid, this->geomGrid_.zcorn.data());
-        }
-
-        // ACTNUM
-        {
-            const auto nglob =
-                    static_cast<std::size_t>(this->geomGrid_.size[0]) *
-                    static_cast<std::size_t>(this->geomGrid_.size[1]) *
-                    static_cast<std::size_t>(this->geomGrid_.size[2]);
-
-            this->geomGrid_.actnum.assign(nglob, 1);
-
-            ecl_grid_init_actnum_data(grid, this->geomGrid_.actnum.data());
-        }
-    }
+    // Extract geometry of main grid, if provided by the grid source.
+    grid.geometry(this->geomGrid_);
 }
 
 int
@@ -2282,8 +2383,8 @@ Opm::ECLGraph::Impl::linearisedCellData(const ECLRestartData& rstrt,
 }
 
 void
-Opm::ECLGraph::Impl::defineNNCs(const ecl_grid_type*   G,
-                                const ECLInitFileData& init)
+Opm::ECLGraph::Impl::defineNNCs(const ECLGraphGridSource& G,
+                                const ECLInitFileData&    init)
 {
     // Assume all transmissibilites in the result set follow the same unit
     // conventions.
@@ -2293,7 +2394,7 @@ Opm::ECLGraph::Impl::defineNNCs(const ecl_grid_type*   G,
     const auto trans_unit =
         ECL::getUnitSystem(init, gridID)->transmissibility();
 
-    for (const auto& nnc : ECL::loadNNC(G, init.getRawFilePtr())) {
+    for (const auto& nnc : G.nncs()) {
         this->nnc_.add(this->grid_, this->activeOffset_, trans_unit, nnc);
     }
 }
@@ -2483,6 +2584,15 @@ Opm::ECLGraph::load(const boost::filesystem::path& grid,
 Opm::ECLGraph
 Opm::ECLGraph::load(const ecl_grid_type*   grid,
                     const ECLInitFileData& init)
+{
+    const auto source = ECL::ResdataGridSource{ grid, init.getRawFilePtr() };
+
+    return ECLGraph::load(source, init);
+}
+
+Opm::ECLGraph
+Opm::ECLGraph::load(const ECLGraphGridSource& grid,
+                    const ECLInitFileData&    init)
 {
     auto pImpl = ImplPtr{ new Impl(grid, init) };
 

@@ -69,6 +69,7 @@ list (APPEND PUBLIC_HEADER_FILES
         opm/utility/ECLEndPointScaling.hpp
         opm/utility/ECLFluxCalc.hpp
         opm/utility/ECLGraph.hpp
+        opm/utility/ECLGraphGridSource.hpp
         opm/utility/ECLPhaseIndex.hpp
         opm/utility/ECLPiecewiseLinearInterpolant.hpp
         opm/utility/ECLPropertyUnitConversion.hpp
