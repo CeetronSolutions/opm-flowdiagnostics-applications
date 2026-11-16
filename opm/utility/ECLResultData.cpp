@@ -663,12 +663,11 @@ namespace {
         // Read-only, keep open between requests
         const auto open_flags = 0;
 
-        auto F = ECLImpl::FilePtr {
-            ecl_file_open(fname.generic_string().c_str(), open_flags),
-            ecl_file_close
-        };
+        // A shared_ptr calls its deleter also for a NULL pointer, and
+        // ecl_file_close() does not accept NULL.
+        auto* file = ecl_file_open(fname.generic_string().c_str(), open_flags);
 
-        if (! F) {
+        if (file == nullptr) {
             std::ostringstream os;
 
             os << "Failed to load ECL Result object from "
@@ -677,7 +676,7 @@ namespace {
             throw std::invalid_argument(os.str());
         }
 
-        return F;
+        return ECLImpl::FilePtr { file, ecl_file_close };
     }
 
     /// Retrieve first keyword from file
