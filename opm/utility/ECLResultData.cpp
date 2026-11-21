@@ -1124,8 +1124,18 @@ namespace Opm {
             ecl_file_view_iget_named_kw(*this, vector.c_str(),
                                         occurrence);
 
-        assert ((kw != nullptr) &&
-                "Logic Error In Data Availability Check");
+        if (kw == nullptr) {
+            // The keyword can be missing even if the availability check
+            // passed, e.g. if the file was changed or could not be read.
+            std::ostringstream os;
+
+            os << "RESTART: Unable To Load Keyword Data ("
+               << vector << ", "
+               << (gridName.empty() ? "Main Grid" : gridName)
+               << ')';
+
+            throw std::invalid_argument(os.str());
+        }
 
         return ECLImpl::getKeywordData<T>(kw);
     }
@@ -1383,8 +1393,18 @@ namespace Opm {
             ecl_file_view_iget_named_kw(*this, vector.c_str(),
                                         occurrence);
 
-        assert ((kw != nullptr) &&
-                "Logic Error In Data Availability Check");
+        if (kw == nullptr) {
+            // The keyword can be missing even if the availability check
+            // passed, e.g. if the file was changed or could not be read.
+            std::ostringstream os;
+
+            os << "INIT: Unable To Load Keyword Data ("
+               << vector << ", "
+               << (gridName.empty() ? "Main Grid" : gridName)
+               << ')';
+
+            throw std::invalid_argument(os.str());
+        }
 
         return ECLImpl::getKeywordData<T>(kw);
     }
